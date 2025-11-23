@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import json
 import re
-from datetime import datetime
+import unicodedata
+from urllib.parse import urlparse
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -22,6 +24,10 @@ def parse_args() -> argparse.Namespace:
         "--playlist-urls",
         nargs="+",
         help="包含多集列表的页面（如电视剧季页）；脚本会自动提取其中的 /play/ 链接",
+    )
+    parser.add_argument(
+        "--series-name",
+        help="自定义剧名/节目名，用于输出文件命名（可避免过长的 URL 名）",
     )
     parser.add_argument(
         "--url-file",
@@ -114,6 +120,19 @@ def slug_from_url(url: str) -> str:
     return slug or "barrage"
 
 
+def sanitize_label(label: str) -> str:
+    text = unicodedata.normalize("NFKC", label.strip())
+    # 移除 Windows 不能用的路径字符
+    text = re.sub(r'[\\\\/:*?"<>|]', "-", text)
+    text = re.sub(r"\s+", "_", text)
+    # 允许中英文、数字、下划线、点、短横线
+    text = re.sub(r"[^\w.\u4e00-\u9fff-]+", "-", text, flags=re.UNICODE)
+    text = re.sub(r"-{2,}", "-", text)
+    text = re.sub(r"_{2,}", "_", text)
+    text = text.strip("._-")
+    return text or "episode"
+
+
 async def collect_barrage_for_page(
     context: BrowserContext, url: str, timeout_s: int, extra_wait_s: int
 ) -> List[Dict[str, Any]]:
@@ -156,29 +175,43 @@ async def collect_barrage_for_page(
     return collected
 
 
-async def extract_episode_urls(context: BrowserContext, playlist_url: str) -> List[str]:
-    """从剧集列表页提取所有 /play/ 链接（去重保留顺序）"""
+async def extract_episode_urls(context: BrowserContext, playlist_url: str) -> List[Dict[str, str]]:
+    """从剧集列表页提取当前剧集的 /play/ 链接（去重保留顺序），附带标题文本"""
     page: Page = await context.new_page()
     try:
         await page.goto(playlist_url, wait_until="networkidle")
     except Exception:
         await page.goto(playlist_url)
-    anchors = await page.eval_on_selector_all(
+    anchors: List[Dict[str, str]] = await page.eval_on_selector_all(
         "a[href*='/play/']",
         """els => {
-            const seen = new Set();
-            const results = [];
-            for (const el of els) {
-                const href = el.href;
-                if (!href || seen.has(href)) continue;
-                seen.add(href);
-                results.push(href);
-            }
-            return results;
+            return els.map(el => ({
+                href: el.href,
+                text: (el.textContent || '').trim()
+            }));
         }""",
     )
     await page.close()
-    return anchors or []
+    if not anchors:
+        return []
+
+    parsed = urlparse(playlist_url)
+    base_slug = parsed.path.rstrip("/").split("/")[-1] if "/play/" in parsed.path else None
+    results: List[Dict[str, str]] = []
+    seen = set()
+    for item in anchors:
+        href = item.get("href") or ""
+        text = item.get("text") or ""
+        if not href:
+            continue
+        if base_slug and f"/play/{base_slug}" not in href:
+            # 过滤掉推荐的其他剧
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        results.append({"url": href, "title": text})
+    return results
 
 
 async def main():
@@ -189,7 +222,7 @@ async def main():
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     async with async_playwright() as p:
         browser = None
@@ -240,8 +273,8 @@ async def main():
                 print(f"使用指定浏览器内核: {args.executable_path}")
 
         # 如果提供了剧集列表页，先解析得到所有剧集播放链接
+        episode_entries: List[Dict[str, str]] = [{"url": u, "title": ""} for u in urls]
         if args.playlist_urls:
-            playlist_links: List[str] = []
             for playlist_url in args.playlist_urls:
                 print(f"解析剧集列表页: {playlist_url}")
                 try:
@@ -251,36 +284,54 @@ async def main():
                     episodes = []
                 if episodes:
                     print(f"  获取到 {len(episodes)} 个播放链接")
-                    playlist_links.extend(episodes)
+                    episode_entries.extend(episodes)
                 else:
                     print("  未获取到播放链接")
-            urls.extend(playlist_links)
 
-        if not urls:
+        if not episode_entries:
             print("未获得任何播放页链接，退出。")
             return
 
         # 去重保持顺序
         seen_urls = set()
-        unique_urls = []
-        for u in urls:
-            if u in seen_urls:
+        unique_entries: List[Dict[str, str]] = []
+        for item in episode_entries:
+            url = item["url"]
+            if url in seen_urls:
                 continue
-            seen_urls.add(u)
-            unique_urls.append(u)
+            seen_urls.add(url)
+            unique_entries.append(item)
 
-        for idx, url in enumerate(unique_urls, start=1):
-            print(f"[{idx}/{len(urls)}] 访问: {url}")
+        total = len(unique_entries)
+        for idx, entry in enumerate(unique_entries, start=1):
+            url = entry["url"]
+            title = sanitize_label(entry.get("title") or "") if entry.get("title") else ""
+            print(f"[{idx}/{total}] 访问: {url}")
             barrages = await collect_barrage_for_page(
                 context, url, timeout_s=args.timeout, extra_wait_s=args.extra_wait
             )
             if not barrages:
                 print("  未捕获到 getBarrage 响应，可能页面未加载或需要登录。")
                 continue
-            out_name = f"{idx:02d}_{slug_from_url(url)}_barrage.json"
+            name_parts: List[str] = []
+            series_prefix = sanitize_label(args.series_name) if args.series_name else ""
+            # 避免标题仅为数字且等于索引时重复
+            title_is_duplicate = title and title.lower() in {f"{idx:02d}", f"ep{idx:02d}"}
+            label = title if (title and not title_is_duplicate) else f"ep{idx:02d}"
+
+            if series_prefix:
+                name_parts.append(series_prefix)
+                name_parts.append(label)
+            else:
+                name_parts.append(f"{idx:02d}")
+                name_parts.append(label)
+
+            out_name = "_".join(name_parts) + "_barrage.json"
             out_path = args.output_dir / out_name
             payload = {
                 "source_page": url,
+                "title": entry.get("title") or "",
+                "series": args.series_name or "",
                 "captured_at": timestamp,
                 "count": len(barrages),
                 "requests": barrages,

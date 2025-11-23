@@ -24,9 +24,10 @@ python download_barrage.py \
   --playlist-urls https://www.iyf.tv/play/kpJAtmMX7X4 \
   --connect-over-cdp http://localhost:9222 \
   --accept-language "zh-CN,zh;q=0.9,en;q=0.8" \
-  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
+  --series-name "你的剧名"
 ```
-脚本会先解析列表页中的 `/play/` 链接，再逐个抓取弹幕。
+脚本会先解析列表页中的 `/play/<同一剧集>` 链接（过滤掉推荐区的其他剧），再逐个抓取弹幕。`--series-name` 可自定义输出文件名前缀：带剧名时文件名形如 `剧名_ep01_barrage.json` 或 `剧名_本集标题_barrage.json`；不带剧名时形如 `01_ep01_barrage.json`。
 
 从文件读取 URL（每行一个），可与 `--urls` 混用去重：
 ```bash
