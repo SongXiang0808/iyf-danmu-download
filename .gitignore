@@ -1,0 +1,19 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual envs
+venv/
+.venv/
+
+# Local data/cache
+barrage_output/
+user-data/
+cf.json
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+
