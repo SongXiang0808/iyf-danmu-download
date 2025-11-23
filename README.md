@@ -18,6 +18,16 @@ python download_barrage.py \
   --output-dir barrage_output
 ```
 
+从剧集列表页自动提取所有播放链接（例如一季多集）：
+```bash
+python download_barrage.py \
+  --playlist-urls https://www.iyf.tv/play/kpJAtmMX7X4 \
+  --connect-over-cdp http://localhost:9222 \
+  --accept-language "zh-CN,zh;q=0.9,en;q=0.8" \
+  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+```
+脚本会先解析列表页中的 `/play/` 链接，再逐个抓取弹幕。
+
 从文件读取 URL（每行一个），可与 `--urls` 混用去重：
 ```bash
 python download_barrage.py --url-file urls.txt

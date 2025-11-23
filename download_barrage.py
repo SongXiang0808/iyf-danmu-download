@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
         help="要抓取的剧集/视频播放页 url，空格分隔",
     )
     parser.add_argument(
+        "--playlist-urls",
+        nargs="+",
+        help="包含多集列表的页面（如电视剧季页）；脚本会自动提取其中的 /play/ 链接",
+    )
+    parser.add_argument(
         "--url-file",
         type=Path,
         help="包含多个 url 的文件，按行分隔；会和 --urls 合并",
@@ -151,11 +156,36 @@ async def collect_barrage_for_page(
     return collected
 
 
+async def extract_episode_urls(context: BrowserContext, playlist_url: str) -> List[str]:
+    """从剧集列表页提取所有 /play/ 链接（去重保留顺序）"""
+    page: Page = await context.new_page()
+    try:
+        await page.goto(playlist_url, wait_until="networkidle")
+    except Exception:
+        await page.goto(playlist_url)
+    anchors = await page.eval_on_selector_all(
+        "a[href*='/play/']",
+        """els => {
+            const seen = new Set();
+            const results = [];
+            for (const el of els) {
+                const href = el.href;
+                if (!href || seen.has(href)) continue;
+                seen.add(href);
+                results.push(href);
+            }
+            return results;
+        }""",
+    )
+    await page.close()
+    return anchors or []
+
+
 async def main():
     args = parse_args()
     urls = read_urls(args)
-    if not urls:
-        print("没有 url 输入，请用 --urls 或 --url-file 指定播放页链接。")
+    if not urls and not args.playlist_urls:
+        print("没有 url 输入，请用 --urls / --url-file / --playlist-urls 指定播放页或列表页链接。")
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +239,37 @@ async def main():
             if args.executable_path:
                 print(f"使用指定浏览器内核: {args.executable_path}")
 
-        for idx, url in enumerate(urls, start=1):
+        # 如果提供了剧集列表页，先解析得到所有剧集播放链接
+        if args.playlist_urls:
+            playlist_links: List[str] = []
+            for playlist_url in args.playlist_urls:
+                print(f"解析剧集列表页: {playlist_url}")
+                try:
+                    episodes = await extract_episode_urls(context, playlist_url)
+                except Exception as exc:
+                    print(f"  解析失败: {exc}")
+                    episodes = []
+                if episodes:
+                    print(f"  获取到 {len(episodes)} 个播放链接")
+                    playlist_links.extend(episodes)
+                else:
+                    print("  未获取到播放链接")
+            urls.extend(playlist_links)
+
+        if not urls:
+            print("未获得任何播放页链接，退出。")
+            return
+
+        # 去重保持顺序
+        seen_urls = set()
+        unique_urls = []
+        for u in urls:
+            if u in seen_urls:
+                continue
+            seen_urls.add(u)
+            unique_urls.append(u)
+
+        for idx, url in enumerate(unique_urls, start=1):
             print(f"[{idx}/{len(urls)}] 访问: {url}")
             barrages = await collect_barrage_for_page(
                 context, url, timeout_s=args.timeout, extra_wait_s=args.extra_wait
