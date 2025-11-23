@@ -48,3 +48,22 @@ python download_barrage.py --url-file urls.txt
   - 尝试用本机 Chrome/Chromium：在上面的基础上加 `--executable-path /path/to/chrome`，并保持 `--headed`，让它更像真实浏览器；
   - 若仍被挑战，可再配合 `--storage-state cf.json --save-storage-state`（仅非持久模式生效），先手动通过验证后保存 cookies；
   - Playwright 已加 `--disable-blink-features=AutomationControlled`，避免明显的自动化标记，但无法绕过需要人工操作的挑战，只能在可视模式下手动完成。
+
+### 已验证可用的 Cloudflare 绕过流程（Windows 示例）
+在某些环境下，直接用 Playwright 启动浏览器仍会循环验证。实测可用的方案是“先手动开启带调试端口的 Chrome，再让脚本连接”：
+
+1. 先开一个真实 Chrome（新 profile，带远程调试）：
+   ```powershell
+   & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\chrome-profile"
+   ```
+2. 在这个 Chrome 窗口里打开目标播放页，手动通过 Cloudflare 验证/登录，必要时点播放。
+3. 运行脚本，连接到刚才的浏览器（保持窗口打开）：
+   ```bash
+   python download_barrage.py \
+     --urls https://www.iyf.tv/play/kpJAtmMX7X4 \
+     --connect-over-cdp http://localhost:9222 \
+     --accept-language "zh-CN,zh;q=0.9,en;q=0.8" \
+     --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" \
+     --timeout 30 --extra-wait 5
+   ```
+4. 脚本会复用你在真实 Chrome 里的会话，拦截 `getBarrage` 响应并保存到 `barrage_output/`。
